@@ -21,6 +21,21 @@ export const GRANT_POLICY = {
 };
 
 export class TokenBudgetExceeded extends Error {}
+export class SpendLimitReached extends Error {}
+
+/** Hard stop on total AI spend (LLM_BUDGET_CENTS). */
+export function checkSpend(spentCents: number, limitCents: number): void {
+  if (spentCents >= limitCents) {
+    throw new SpendLimitReached(
+      `LLM budget reached: ~$${(spentCents / 100).toFixed(2)} spent of $${(limitCents / 100).toFixed(2)} (LLM_BUDGET_CENTS)`
+    );
+  }
+}
+
+/** Limits an agent stops on cleanly, handing back what it has, instead of failing the run. */
+export function isBudgetStop(err: unknown): err is TokenBudgetExceeded | SpendLimitReached {
+  return err instanceof TokenBudgetExceeded || err instanceof SpendLimitReached;
+}
 export class BudgetRefused extends Error {}
 
 interface Grant {

@@ -13,7 +13,7 @@ import { getDb } from "./db.js";
 import { agentRuns, agentSteps, llmCalls, ledger } from "./schema.js";
 import { withSpan } from "./trace.js";
 import { chat, estimatePromptTokens, fitMessages, type ChatMessage, type JsonSchema, type ToolDef } from "./model.js";
-import { TokenBudgetExceeded, planTurn, tokensLeft } from "./budget.js";
+import { isBudgetStop, planTurn, tokensLeft } from "./budget.js";
 
 export type AgentName = "operator" | "content" | "analytics" | "support";
 export type Effort = "low" | "medium" | "high";
@@ -278,8 +278,8 @@ async function modelLoop(
         ...(retried ? { toolChoice: "none" as const } : {}),
       });
     } catch (err) {
-      if (!(err instanceof TokenBudgetExceeded)) throw err;
-      // Out of tokens for this run: stop cleanly and hand back what we have.
+      if (!isBudgetStop(err)) throw err;
+      // Out of tokens for this run, or the spend limit: stop cleanly and hand back what we have.
       const note = `Stopped early: ${err.message}.`;
       steps.write({ kind: "text", content: note });
       return lastText ? `${lastText}\n\n${note}` : note;

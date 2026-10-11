@@ -5,7 +5,7 @@
 import { config } from "./config.js";
 import { sqlAll } from "./db.js";
 import { withSpan } from "./trace.js";
-import { TokenBudgetExceeded, agentAllowance, chargeTokens, tokensLeft } from "./budget.js";
+import { TokenBudgetExceeded, agentAllowance, chargeTokens, checkSpend, tokensLeft } from "./budget.js";
 
 // Below this many tokens of room for a reply, don't start a call.
 const MIN_REPLY_TOKENS = 200;
@@ -161,12 +161,7 @@ export async function chat(opts: {
   const model = opts.model ?? config.model;
   if (!config.openrouterApiKey) throw new Error("OPENROUTER_API_KEY is not set (see .env.example)");
 
-  const spent = inferenceSpentCents();
-  if (spent >= config.llmBudgetCents) {
-    throw new Error(
-      `LLM budget reached: ~$${(spent / 100).toFixed(2)} spent of $${(config.llmBudgetCents / 100).toFixed(2)} (LLM_BUDGET_CENTS)`
-    );
-  }
+  checkSpend(inferenceSpentCents(), config.llmBudgetCents);
 
   // Per-run token budget: estimate the prompt conservatively (~3 chars/token)
   // and cap the reply so the call can't overshoot what this agent has left.
