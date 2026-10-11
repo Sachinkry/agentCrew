@@ -1,0 +1,1 @@
+continue unless i can see agents thinking traces using neatlogs (read the docs) and yes we use openrsource models from aws bedrock(ask for credentials or just mention them in env). like glm3.5 or deepseek v4.1
