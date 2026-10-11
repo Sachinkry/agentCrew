@@ -6,7 +6,7 @@ import { runMetrics, orders, products, ledger } from "../core/schema.js";
 import { eq, sql } from "drizzle-orm";
 import fs from "fs";
 
-const [, , runId] = process.argv;
+const [, , runId = ""] = process.argv;
 
 if (!runId) {
   console.error("Usage: pnpm export:cfo <run_id>");

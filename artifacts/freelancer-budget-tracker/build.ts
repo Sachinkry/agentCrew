@@ -170,7 +170,7 @@ async function main() {
   const outPath = path.join(__dirname, "freelancer-budget-tracker.xlsx");
   XLSX.writeFile(wb, outPath);
   console.log(`Written: ${outPath}`);
-  console.log(`Tabs: ${XLSX.utils.book_get_sheet_names(wb).join(", ")}`);
+  console.log(`Tabs: ${wb.SheetNames.join(", ")}`);
 }
 
 main().catch(console.error);

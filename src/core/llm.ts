@@ -1,9 +1,10 @@
-// LLM client: Amazon Bedrock (Claude) + MOCK_LLM=1 for offline runs.
+// Single-shot LLM calls on open-weight models via OpenRouter + MOCK_LLM=1 for offline runs.
 // Every call automatically writes an inference entry to the ledger.
 
 import { z } from "zod";
 import { config } from "./config.js";
 import { withSpan } from "./trace.js";
+import { chat } from "./model.js";
 import { getDb } from "./db.js";
 import { llmCalls, ledger } from "./schema.js";
 import { randomUUID } from "crypto";
@@ -28,22 +29,8 @@ interface LlmResult {
   spanId: string;
 }
 
-// Per-1M-token pricing (approximate, in USD cents)
-const PRICING: Record<string, { in: number; out: number }> = {
-  "anthropic.claude-3-5-sonnet-20241022-v2:0": { in: 300, out: 1500 },
-  "anthropic.claude-3-5-haiku-20241022-v1:0": { in: 80, out: 400 },
-  "anthropic.claude-3-haiku-20240307-v1:0": { in: 25, out: 125 },
-};
-
 function modelForTier(tier: ModelTier): string {
-  if (tier === "strong") return config.modelStrong;
-  if (tier === "mid") return config.modelMid;
-  return config.modelCheap;
-}
-
-function estimateCost(model: string, inTok: number, outTok: number): number {
-  const p = PRICING[model] ?? { in: 300, out: 1500 };
-  return Math.ceil((inTok / 1_000_000) * p.in + (outTok / 1_000_000) * p.out);
+  return tier === "cheap" ? config.modelCheap : config.model;
 }
 
 // Agent-aware canned mock outputs for offline runs
@@ -89,7 +76,7 @@ export async function callLlm(params: LlmCallParams): Promise<LlmResult> {
   const model = modelForTier(params.tier);
 
   return withSpan(
-    `llm:${params.agent}`,
+    `call:${params.agent}`,
     { agent: params.agent, model, tier: params.tier },
     async (span) => {
       let result: LlmResult;
@@ -98,37 +85,16 @@ export async function callLlm(params: LlmCallParams): Promise<LlmResult> {
         result = mockResponse(params.agent, params.userMessage);
         result.spanId = span.id;
       } else {
-        const { BedrockRuntimeClient, InvokeModelCommand } = await import(
-          "@aws-sdk/client-bedrock-runtime"
-        );
-        const client = new BedrockRuntimeClient({ region: config.awsRegion });
-
-        const body = JSON.stringify({
-          anthropic_version: "bedrock-2023-05-31",
-          max_tokens: 4096,
+        const res = await chat({
+          agent: params.agent,
+          model,
           system: params.systemPrompt,
           messages: [{ role: "user", content: params.userMessage }],
         });
-
-        const cmd = new InvokeModelCommand({
-          modelId: model,
-          contentType: "application/json",
-          accept: "application/json",
-          body,
-        });
-
-        const response = await client.send(cmd);
-        const parsed = JSON.parse(
-          Buffer.from(response.body).toString("utf-8")
-        ) as {
-          content: Array<{ text: string }>;
-          usage: { input_tokens: number; output_tokens: number };
-        };
-
-        const text = parsed.content[0]?.text ?? "";
-        const inTokens = parsed.usage.input_tokens;
-        const outTokens = parsed.usage.output_tokens;
-        const costCents = estimateCost(model, inTokens, outTokens);
+        const text = res.text;
+        const inTokens = res.inTokens;
+        const outTokens = res.outTokens;
+        const costCents = Math.ceil(res.costCents);
 
         result = { text, inTokens, outTokens, costCents, spanId: span.id };
       }
@@ -165,6 +131,12 @@ export async function callLlm(params: LlmCallParams): Promise<LlmResult> {
   );
 }
 
+// Open models often wrap JSON in ```json fences; strip them before parsing.
+function parseJson(text: string): unknown {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  return JSON.parse((fenced?.[1] ?? text).trim());
+}
+
 // Parse LLM output with zod; retry once on failure
 export async function callLlmParsed<T>(
   params: LlmCallParams,
@@ -174,7 +146,7 @@ export async function callLlmParsed<T>(
 
   let raw: unknown;
   try {
-    raw = JSON.parse(result.text);
+    raw = parseJson(result.text);
   } catch {
     // Retry with error hint
     const retryParams = {
@@ -182,7 +154,7 @@ export async function callLlmParsed<T>(
       userMessage: `${params.userMessage}\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY a JSON object matching the schema. Error: invalid JSON`,
     };
     const retry = await callLlm(retryParams);
-    raw = JSON.parse(retry.text);
+    raw = parseJson(retry.text);
   }
 
   const parsed = schema.safeParse(raw);
@@ -196,7 +168,7 @@ export async function callLlmParsed<T>(
   const retry2 = await callLlm(retryParams);
   let raw2: unknown;
   try {
-    raw2 = JSON.parse(retry2.text);
+    raw2 = parseJson(retry2.text);
   } catch {
     throw new Error(`LLM output parse failed after retry: ${retry2.text}`);
   }

@@ -3,3 +3,6 @@ dist/
 runs/*.sqlite
 .env
 *.local
+runs/*.sqlite-*
+artifacts/**/*.xlsx
+public/styles.css

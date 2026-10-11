@@ -1,10 +1,20 @@
 import { z } from "zod";
 
 const ConfigSchema = z.object({
-  // LLM
-  modelStrong: z.string().default("anthropic.claude-3-5-sonnet-20241022-v2:0"),
-  modelMid: z.string().default("anthropic.claude-3-5-haiku-20241022-v1:0"),
-  modelCheap: z.string().default("anthropic.claude-3-haiku-20240307-v1:0"),
+  // LLM: open-weight models via OpenRouter
+  openrouterApiKey: z.string().default(""),
+  openrouterBaseUrl: z.string().default("https://openrouter.ai/api/v1"),
+  model: z.string().default("deepseek/deepseek-v4.1-flash"),
+  modelCheap: z.string().default("z-ai/glm-5.3-flash"),
+  maxTokens: z.number().default(4096),
+  // Crustdata API key, used by Analytics for competitor research.
+  crustdataApiKey: z.string().default(""),
+  // Products the store sells and the agents promote; other B2B listings stay hidden (draft).
+  focusProducts: z.array(z.string()).default(["neatlogs"]),
+  // Max tokens (input + output) one team run may use, split between the agents (see budget.ts).
+  runTokenBudget: z.number().default(10_000),
+  // Hard stop: no model calls once total inference spend reaches this (US cents).
+  llmBudgetCents: z.number().default(500),
   mockLlm: z.boolean().default(false),
 
   // Business rules
@@ -36,17 +46,23 @@ const ConfigSchema = z.object({
   // Approvals
   autoApproveDemo: z.boolean().default(false),
 
-  // AWS
-  awsRegion: z.string().default("us-east-1"),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
 
 function loadConfig(): Config {
   return ConfigSchema.parse({
-    modelStrong: process.env["BEDROCK_MODEL_STRONG"],
-    modelMid: process.env["BEDROCK_MODEL_MID"],
-    modelCheap: process.env["BEDROCK_MODEL_CHEAP"],
+    openrouterApiKey: process.env["OPENROUTER_API_KEY"] || undefined,
+    openrouterBaseUrl: process.env["OPENROUTER_BASE_URL"] || undefined,
+    model: process.env["LLM_MODEL"] || undefined,
+    modelCheap: process.env["LLM_MODEL_CHEAP"] || undefined,
+    maxTokens: process.env["LLM_MAX_TOKENS"] ? Number(process.env["LLM_MAX_TOKENS"]) : undefined,
+    crustdataApiKey: process.env["CRUSTDATA_API_KEY"] || undefined,
+    focusProducts: process.env["FOCUS_PRODUCTS"]
+      ? process.env["FOCUS_PRODUCTS"].split(",").map((s) => s.trim()).filter(Boolean)
+      : undefined,
+    runTokenBudget: process.env["RUN_TOKEN_BUDGET"] ? Number(process.env["RUN_TOKEN_BUDGET"]) : undefined,
+    llmBudgetCents: process.env["LLM_BUDGET_CENTS"] ? Number(process.env["LLM_BUDGET_CENTS"]) : undefined,
     mockLlm: process.env["MOCK_LLM"] === "1",
     dailySpendCapCents: process.env["DAILY_SPEND_CAP_CENTS"]
       ? parseInt(process.env["DAILY_SPEND_CAP_CENTS"])
@@ -57,7 +73,6 @@ function loadConfig(): Config {
     simSeed: process.env["SIM_SEED"]
       ? parseInt(process.env["SIM_SEED"])
       : undefined,
-    awsRegion: process.env["AWS_REGION"],
     autoApproveDemo: process.env["AUTO_APPROVE_DEMO"] === "1",
   });
 }

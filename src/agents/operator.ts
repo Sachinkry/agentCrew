@@ -1,321 +1,196 @@
-import { z } from "zod";
-import { callLlmParsed } from "../core/llm.js";
-import { withSpan } from "../core/trace.js";
-import { getDb } from "../core/db.js";
-import {
-  tasks,
-  experiments,
-  products,
-  events,
-  runMetrics,
-} from "../core/schema.js";
-import { getDayMetrics, writeRunMetrics } from "../services/metrics.js";
-import { runDiagnosis } from "./analytics.js";
-import { runTask } from "./content.js";
-import { check } from "../services/policy.js";
-import { getPolicyBlockCount, resetPolicyBlockCount } from "../services/policy.js";
-import { getClaimVerifiedRate } from "../services/verify.js";
+// Operator agent: the manager. Looks at the store, decides what to do next, and
+// hands work to the Analytics, Content and Support agents (each runs as a tool,
+// so their traces nest under the operator's).
+
+import { eq } from "drizzle-orm";
+import { loadPrompt, runAgent, lastResult, type AgentSpec, type AgentTool } from "../core/agent.js";
+import { getDb, sqlAll } from "../core/db.js";
 import { config } from "../core/config.js";
-import { randomUUID } from "crypto";
-import { eq, and, sql } from "drizzle-orm";
-import fs from "fs";
+import { askAnalytics } from "./analytics.js";
+import { assignContent } from "./content.js";
+import { runSupport } from "./support.js";
+import { withTokenBudget, withGrant, grantPool, tokensLeft, BudgetRefused } from "../core/budget.js";
+import { agentRuns } from "../core/schema.js";
 
-const systemPrompt = fs.readFileSync(
-  new URL("./prompts/operator.md", import.meta.url),
-  "utf-8"
-);
+const tools: AgentTool[] = [
+  {
+    name: "get_store_snapshot",
+    description: "Quick overview: live products with leads so far, money, open tickets, and posts (published / awaiting the owner's approval).",
+    input_schema: { type: "object", properties: {} },
+    run: async () => ({
+      products: sqlAll(`SELECT p.slug, p.title, p.price_label, p.version,
+          (SELECT COUNT(*) FROM leads l WHERE l.product_id = p.id) AS leads
+        FROM products p WHERE p.status = 'live'`),
+      money: sqlAll(`SELECT kind, SUM(amount_cents) AS cents FROM ledger GROUP BY kind`),
+      openTickets: sqlAll<{ n: number }>(`SELECT COUNT(*) AS n FROM tickets WHERE status='open'`)[0]?.n ?? 0,
+      // Drafts wait for the store owner's approval; no agent can publish them.
+      posts: sqlAll<{ published: number; awaitingOwnerApproval: number }>(
+        `SELECT COUNT(CASE WHEN po.status = 'published' THEN 1 END) AS published,
+                COUNT(CASE WHEN po.status = 'draft' THEN 1 END) AS awaitingOwnerApproval
+         FROM posts po LEFT JOIN products p ON p.id = po.product_id
+         WHERE po.product_id IS NULL OR p.status = 'live'`
+      )[0],
+    }),
+  },
+  {
+    name: "ask_analytics",
+    description: "Ask the Analytics agent a question about sales, traffic sources, posts or AI cost. Returns its answer.",
+    input_schema: {
+      type: "object",
+      properties: {
+        question: { type: "string" },
 
-// ── Schemas ──────────────────────────────────────────────────────────────────
+      },
+      required: ["question"],
+    },
+    run: ({ question }, ctx) =>
+      delegate("analytics", () =>
+        askAnalytics(String(question), { ...opts(ctx), parentId: ctx.agentRunId })
+      ),
+  },
+  {
+    name: "assign_content",
+    description:
+      "Give the Content agent a job for one product: fix/improve its listing, draft promo posts, and/or write and publish a blog post on /blog promoting it. Say which product (slug) and what you want.",
+    input_schema: {
+      type: "object",
+      properties: {
+        slug: { type: "string" },
+        instructions: { type: "string" },
 
-const OperatorActionSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("create_task"),
-    toAgent: z.enum(["content", "analytics", "support"]),
-    brief: z.string(),
-    metricCited: z.string(),
-  }),
-  z.object({
-    type: z.literal("start_experiment"),
-    hypothesis: z.string(),
-    lever: z.enum([
-      "price","listing","post_style","bundle","discount","new_product","retire",
-    ]),
-    targetId: z.string().optional(),
-    params: z.record(z.unknown()),
-    metricCited: z.string(),
-  }),
-  z.object({
-    type: z.literal("close_experiment"),
-    experimentId: z.string(),
-    decision: z.enum(["keep", "revert"]),
-    metricCited: z.string(),
-  }),
-  z.object({
-    type: z.literal("set_price"),
-    productId: z.string(),
-    newPriceCents: z.number(),
-    metricCited: z.string(),
-  }),
-  z.object({
-    type: z.literal("retire_product"),
-    productId: z.string(),
-    metricCited: z.string(),
-  }),
-  z.object({
-    type: z.literal("noop"),
-    reason: z.string(),
-  }),
-]);
+      },
+      required: ["slug", "instructions"],
+    },
+    run: ({ slug, instructions }, ctx) =>
+      delegate("content", () =>
+        assignContent(`Product: ${slug}\n${instructions}`, { ...opts(ctx), parentId: ctx.agentRunId })
+      ),
+  },
+  {
+    name: "run_support",
+    description: "Have the Support agent work through open customer tickets.",
+    input_schema: {
+      type: "object",
+      properties: {
 
-const OperatorOutputSchema = z.object({
-  actions: z.array(OperatorActionSchema).max(config.maxActionsPerTick),
-  reasoning: z.string(),
-});
+      },
+    },
+    run: (_input, ctx) =>
+      delegate("support", () => runSupport({ ...opts(ctx), parentId: ctx.agentRunId })),
+  },
+];
 
-// ── Operator tick ─────────────────────────────────────────────────────────────
+// Hand a job to a helper inside its own token grant, sized by GRANT_POLICY (see budget.ts). A refused job
+// comes back to the operator as a tool error so it can pick something smaller.
+export async function delegate(
+  agent: string,
+  job: () => Promise<{ agentRunId: string; answer: string }>
+) {
+  try {
+    const { result, granted, used } = await withGrant(agent, undefined, job);
+    return {
+      agentRunId: result.agentRunId,
+      answer: result.answer,
+      tokens: { granted, used, runLeft: tokensLeft("operator"), freeForJobs: grantPool() },
+    };
+  } catch (err) {
+    if (err instanceof BudgetRefused) throw new Error(`NOT RUN: ${err.message}`);
+    throw err;
+  }
+}
 
-export async function operatorTick(
-  simDay: number,
-  runId: string
-): Promise<void> {
-  return withSpan(
-    "operator:tick",
-    { sim_day: simDay, run_id: runId },
-    async (span) => {
-      const db = getDb();
+function opts(ctx: { runId?: string | undefined; simDay: number }) {
+  return { simDay: ctx.simDay, ...(ctx.runId ? { runId: ctx.runId } : {}) };
+}
 
-      // Get metrics and diagnosis
-      const metrics = await getDayMetrics(simDay > 1 ? simDay - 1 : simDay);
-      const diagnosis = await runDiagnosis(simDay, { runId });
+const mock: AgentSpec["mock"] = (history) => {
+  const snap = lastResult(history, "get_store_snapshot");
+  const analysis = lastResult(history, "ask_analytics");
+  const support = lastResult(history, "run_support");
+  const content = lastResult(history, "assign_content");
 
-      const activeExps = db
-        .select()
-        .from(experiments)
-        .where(eq(experiments.decision, "pending"))
-        .all();
-
-      const liveProducts = db
-        .select()
-        .from(products)
-        .where(eq(products.status, "live"))
-        .all();
-
-      // Ask LLM for strategy
-      const output = await callLlmParsed(
+  if (!snap) {
+    return {
+      thinking: "New check-in. First a quick look at the whole store before deciding anything.",
+      calls: [{ name: "get_store_snapshot", input: {} }],
+    };
+  }
+  if (!analysis) {
+    return {
+      thinking: `${snap.products.length} products live, ${snap.openTickets} open tickets, ${snap.posts.awaitingOwnerApproval} posts awaiting approval. I don't know yet which product needs help or which channel works. Asking Analytics rather than guessing.`,
+      calls: [
         {
-          agent: "operator",
-          tier: "strong",
-          systemPrompt,
-          userMessage: `Day ${simDay} operator tick.
-
-Yesterday metrics:
-- Revenue: $${(metrics.revenueCents / 100).toFixed(2)}
-- Profit: $${(metrics.profitCents / 100).toFixed(2)}
-- Orders: ${metrics.orderCount}
-- Inference cost: $${(metrics.inferenceCostCents / 100).toFixed(2)}
-- Conversion (web): ${JSON.stringify(metrics.conversionByChannel["web"])}
-- Conversion (x): ${JSON.stringify(metrics.conversionByChannel["x"])}
-
-Analytics diagnosis: ${diagnosis.summary}
-
-Active experiments: ${activeExps.length} / ${config.maxActionsPerTick}
-Live products: ${liveProducts.map((p) => `${p.id}:${p.title}:$${(p.priceCents / 100).toFixed(2)}`).join(", ")}
-
-Choose up to ${config.maxActionsPerTick} actions. Cite the metric for each.`,
-          runId,
-          simDay,
-          parentSpanId: span.id,
+          name: "ask_analytics",
+          input: { question: "Which product is weakest, which channel converts best, and are our posts bringing visitors?" },
         },
-        OperatorOutputSchema
-      );
+      ],
+    };
+  }
+  if (snap.openTickets > 0 && !support) {
+    return {
+      thinking: `Analytics says: "${analysis.answer.split("\n")[0]}". Before pushing for more buyers, ${snap.openTickets} customers are waiting — unhappy buyers cost more than missed sales. Sending Support in first.`,
+      calls: [{ name: "run_support", input: {} }],
+    };
+  }
+  if (!content) {
+    const flagged = analysis.answer.match(/Weakest: ([\w-]+)/)?.[1];
+    const untouched = snap.products.filter((p: any) => p.version === 1).map((p: any) => p.slug);
+    const weakest = flagged && untouched.includes(flagged) ? flagged : untouched[0] ?? flagged ?? snap.products[0].slug;
+    const why =
+      weakest === flagged
+        ? `Analytics flagged ${weakest} as the weakest seller.`
+        : `Analytics flagged ${flagged}, but Content already reworked that one. ${weakest}'s listing has never been checked, so that's the better use of this round.`;
+    return {
+      thinking: `${why} Most likely fix is the listing plus a promo post on the channel that converts. Assigning Content, and telling it to check claims first so we don't promote something untrue.`,
+      calls: [
+        {
+          name: "assign_content",
+          input: {
+            slug: weakest,
+            instructions: "Check the listing's claims against the files, rewrite it with only true claims, then draft one X post with a tracked link.",
+          },
+        },
+      ],
+    };
+  }
+  return {
+    thinking: "Three actions done this round. Next check-in will show whether the new post brings visits.",
+    answer: [
+      `Analytics: ${analysis.answer.split("\n")[0]}`,
+      support ? `Support: ${support.answer}` : "",
+      `Content: ${content.answer}`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  };
+};
 
-      // Execute actions
-      for (const action of output.actions) {
-        await executeAction(action, simDay, runId, span.id);
-      }
+export const operatorAgent: AgentSpec = {
+  agent: "operator",
+  effort: "medium",
+  tools,
+  mock,
+  system: loadPrompt("operator"),
+};
 
-      // Auto-revert experiments with negative profit
-      await checkAutoRevert(simDay, runId);
-
-      // Write day metrics
-      const policyBlocks = getPolicyBlockCount();
-      resetPolicyBlockCount();
-      const claimVerifiedRate = getClaimVerifiedRate();
-      const dayMetrics = await getDayMetrics(simDay);
-      writeRunMetrics(runId, dayMetrics, policyBlocks, claimVerifiedRate);
-
-      db.insert(events)
-        .values({
-          id: randomUUID(),
-          runId,
-          simDay,
-          agent: "operator",
-          action: "tick",
-          payloadJson: JSON.stringify({
-            actionsCount: output.actions.length,
-            reasoning: output.reasoning,
-          }),
-        })
-        .run();
-    }
+// One team run: the operator plus every helper it calls share one token budget.
+export async function operatorTick(simDay: number, runId?: string) {
+  const { result, used, limit, byAgent } = await withTokenBudget(() =>
+    runAgent(
+      operatorAgent,
+      `Check-in for day ${simDay}. Review the store and take up to 3 actions that will sell more of its products. ` +
+        `The whole team shares a budget of ${config.runTokenBudget} tokens for this run, so keep it short.`,
+      { simDay, ...(runId ? { runId } : {}) }
+    )
   );
-}
-
-async function executeAction(
-  action: z.infer<typeof OperatorActionSchema>,
-  simDay: number,
-  runId: string,
-  parentSpanId?: string
-): Promise<void> {
+  const split = Object.entries(byAgent).map(([a, n]) => `${a} ${n}`).join(", ");
+  const usage = `Tokens used: ${used} of ${limit}${split ? ` (${split})` : ""}.`;
+  console.log(`[budget] ${usage}`);
   const db = getDb();
-
-  switch (action.type) {
-    case "create_task": {
-      const taskId = randomUUID();
-      db.insert(tasks)
-        .values({
-          id: taskId,
-          fromAgent: "operator",
-          toAgent: action.toAgent,
-          brief: action.brief,
-          status: "open",
-          simDay,
-        })
-        .run();
-
-      if (action.toAgent === "content") {
-        await runTask(taskId, { runId, simDay });
-      }
-      break;
-    }
-
-    case "start_experiment": {
-      // One active experiment per (lever, target)
-      const existing = db
-        .select()
-        .from(experiments)
-        .where(
-          and(
-            eq(experiments.lever, action.lever),
-            eq(experiments.decision, "pending")
-          )
-        )
-        .get();
-
-      if (existing) {
-        console.log(
-          `[operator] skipping experiment — already active for lever ${action.lever}`
-        );
-        break;
-      }
-
-      db.insert(experiments)
-        .values({
-          id: randomUUID(),
-          hypothesis: action.hypothesis,
-          lever: action.lever,
-          targetId: action.targetId ?? null,
-          paramsJson: JSON.stringify(action.params),
-          startDay: simDay,
-          decision: "pending",
-        })
-        .run();
-      break;
-    }
-
-    case "close_experiment": {
-      db.update(experiments)
-        .set({ decision: action.decision, endDay: simDay })
-        .where(eq(experiments.id, action.experimentId))
-        .run();
-      break;
-    }
-
-    case "set_price": {
-      const product = db
-        .select()
-        .from(products)
-        .where(eq(products.id, action.productId))
-        .get();
-
-      if (!product) break;
-
-      const policyResult = check({
-        type: "set_price",
-        productId: action.productId,
-        newPriceCents: action.newPriceCents,
-        costCentsEst: product.costCentsEst,
-        simDay,
-        runId,
-      });
-
-      if (policyResult.allowed) {
-        db.update(products)
-          .set({ priceCents: action.newPriceCents })
-          .where(eq(products.id, action.productId))
-          .run();
-      }
-      break;
-    }
-
-    case "retire_product": {
-      db.update(products)
-        .set({ status: "retired" })
-        .where(eq(products.id, action.productId))
-        .run();
-      break;
-    }
-
-    case "noop":
-      console.log(`[operator] noop: ${action.reason}`);
-      break;
-  }
-
-  db.insert(events)
-    .values({
-      id: randomUUID(),
-      runId,
-      simDay,
-      agent: "operator",
-      action: action.type,
-      payloadJson: JSON.stringify(action),
-    })
+  const row = db.select().from(agentRuns).where(eq(agentRuns.id, result.agentRunId)).get();
+  db.update(agentRuns)
+    .set({ result: `${row?.result ?? result.answer}\n${usage}` })
+    .where(eq(agentRuns.id, result.agentRunId))
     .run();
-}
-
-async function checkAutoRevert(simDay: number, runId: string): Promise<void> {
-  const db = getDb();
-  const activeExps = db
-    .select()
-    .from(experiments)
-    .where(eq(experiments.decision, "pending"))
-    .all();
-
-  for (const exp of activeExps) {
-    if (!exp.resultJson) continue;
-    try {
-      const result = JSON.parse(exp.resultJson) as { profitDeltaCents?: number };
-      if (result.profitDeltaCents !== undefined && result.profitDeltaCents < 0) {
-        db.update(experiments)
-          .set({ decision: "revert", endDay: simDay })
-          .where(eq(experiments.id, exp.id))
-          .run();
-        console.log(
-          `[operator] auto-reverted experiment ${exp.id} (negative profit delta)`
-        );
-        db.insert(events)
-          .values({
-            id: randomUUID(),
-            runId,
-            simDay,
-            agent: "operator",
-            action: "auto_revert_experiment",
-            payloadJson: JSON.stringify({ experimentId: exp.id }),
-          })
-          .run();
-      }
-    } catch {
-      // Ignore parse errors
-    }
-  }
+  return { ...result, tokensUsed: used, tokenLimit: limit };
 }

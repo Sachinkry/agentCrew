@@ -5,7 +5,7 @@ import { getDb } from "../core/db.js";
 import { runMetrics } from "../core/schema.js";
 import { eq, sql } from "drizzle-orm";
 
-const [, , runA, runB] = process.argv;
+const [, , runA = "", runB = ""] = process.argv;
 
 if (!runA || !runB) {
   console.error("Usage: pnpm eval:compare <run_id_a> <run_id_b>");

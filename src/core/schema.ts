@@ -23,7 +23,11 @@ export const products = sqliteTable("products", {
   id: text("id").primaryKey(),
   slug: text("slug").notNull().unique(),
   type: text("type", {
-    enum: ["spreadsheet", "rules_pack", "prompt_pack", "code_kit", "guide", "planner"],
+    enum: [
+      "spreadsheet", "rules_pack", "prompt_pack", "code_kit", "guide", "planner",
+      // B2B tools the store refers buyers to
+      "observability", "dev_tool", "data_api",
+    ],
   }).notNull(),
   title: text("title").notNull(),
   description: text("description").notNull(),
@@ -35,6 +39,10 @@ export const products = sqliteTable("products", {
     .notNull()
     .default("draft"),
   artifactPath: text("artifact_path"),
+  // B2B listings: who makes it, where "Try it" sends the buyer, and a price line like "Free · from $99/mo".
+  vendor: text("vendor"),
+  ctaUrl: text("cta_url"),
+  priceLabel: text("price_label"),
   version: integer("version").notNull().default(1),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
@@ -53,7 +61,7 @@ export const claims = sqliteTable("claims", {
 
 export const channels = sqliteTable("channels", {
   id: text("id").primaryKey(),
-  name: text("name", { enum: ["web", "x", "email"] })
+  name: text("name", { enum: ["web", "x", "email", "blog"] })
     .notNull()
     .unique(),
 });
@@ -241,4 +249,80 @@ export const runMetrics = sqliteTable("run_metrics", {
   claimVerifiedRate: real("claim_verified_rate"),
   policyBlocks: integer("policy_blocks").notNull().default(0),
   costPerOrder: real("cost_per_order"),
+});
+
+// One agent working on one task. Sub-agents point at the run that called them.
+export const agentRuns = sqliteTable("agent_runs", {
+  id: text("id").primaryKey(),
+  runId: text("run_id"),
+  parentId: text("parent_id"),
+  agent: text("agent").notNull(),
+  task: text("task").notNull(),
+  status: text("status", { enum: ["running", "done", "failed"] })
+    .notNull()
+    .default("running"),
+  result: text("result"),
+  costCents: real("cost_cents").notNull().default(0),
+  simDay: integer("sim_day").notNull().default(0),
+  startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+  endedAt: integer("ended_at", { mode: "timestamp_ms" }),
+});
+
+// Every thought, tool call, tool result and answer inside an agent run, in order.
+export const agentSteps = sqliteTable("agent_steps", {
+  id: text("id").primaryKey(),
+  agentRunId: text("agent_run_id")
+    .notNull()
+    .references(() => agentRuns.id),
+  seq: integer("seq").notNull(),
+  kind: text("kind", {
+    enum: ["thinking", "text", "tool_call", "tool_result", "error"],
+  }).notNull(),
+  toolName: text("tool_name"),
+  content: text("content").notNull(),
+  isError: integer("is_error", { mode: "boolean" }).notNull().default(false),
+  childRunId: text("child_run_id"),
+  ts: integer("ts", { mode: "timestamp_ms" }).notNull(),
+});
+
+// Real storefront visits, tagged with where the visitor came from.
+// A buyer clicked through to a vendor's signup page: the store's "sale" for B2B listings.
+export const leads = sqliteTable("leads", {
+  id: text("id").primaryKey(),
+  productId: text("product_id")
+    .notNull()
+    .references(() => products.id),
+  src: text("src").notNull(),
+  postId: text("post_id"),
+  ts: integer("ts", { mode: "timestamp_ms" }).notNull(),
+});
+
+// Cached Crustdata API responses (keyed by endpoint + request), so repeat runs don't spend credits again.
+export const crustdataCache = sqliteTable("crustdata_cache", {
+  key: text("key").primaryKey(),
+  response: text("response").notNull(),
+  credits: real("credits"),
+  fetchedAt: integer("fetched_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+// Blog posts written and published by the Content agent to promote products.
+export const blogPosts = sqliteTable("blog_posts", {
+  id: text("id").primaryKey(),
+  slug: text("slug").notNull().unique(),
+  title: text("title").notNull(),
+  summary: text("summary").notNull(),
+  body: text("body").notNull(),
+  productSlugs: text("product_slugs").notNull(), // JSON array of promoted product slugs
+  agentRunId: text("agent_run_id"),
+  simDay: integer("sim_day").notNull(),
+  publishedAt: integer("published_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export const visits = sqliteTable("visits", {
+  id: text("id").primaryKey(),
+  path: text("path").notNull(),
+  productSlug: text("product_slug"),
+  src: text("src").notNull(),
+  postId: text("post_id"),
+  ts: integer("ts", { mode: "timestamp_ms" }).notNull(),
 });

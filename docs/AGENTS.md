@@ -3,7 +3,7 @@
 **Project:** AutoShelf — autonomous digital-goods store  
 **Hackathon:** neatHack, submission deadline Mon Oct 12 11:55 PM IST  
 **Repo:** /Users/sachinkumaryadav/code-sac/neathack-gum  
-**Stack:** TypeScript + Node 20 + tsx, SQLite/Drizzle, Hono, Claude via Bedrock  
+**Stack:** TypeScript + Node 20 + tsx, SQLite/Drizzle, Hono + React SSR (shadcn/Tailwind), open-weight models (DeepSeek / GLM) via OpenRouter, neatlogs tracing  
 
 ---
 
@@ -13,7 +13,8 @@
 - `src/core/schema.ts` — full SQLite schema (all tables per spec)
 - `src/core/db.ts` — Drizzle wrapper, WAL mode, foreign keys
 - `src/core/config.ts` — zod-validated config from env
-- `src/core/llm.ts` — Bedrock client + MOCK_LLM=1 + auto cost→ledger + zod-retry
+- `src/core/model.ts` — OpenRouter chat client (LLM spans with thinking → neatlogs)
+- `src/core/llm.ts` — single-shot calls + MOCK_LLM=1 + auto cost→ledger + zod-retry
 - `src/core/trace.ts` — neatlogs wrapper with offline fallback
 
 ### Services — COMPLETE
@@ -62,28 +63,70 @@
 
 ---
 
-## What's NOT done yet (priority order)
+## Refined plan (session 2 audit, Oct 11 evening; deadline Oct 12 11:55 PM IST)
 
-### P0 — Must have to demo
-1. **DB migrations** — `pnpm db:push` must run against the SQLite schema. Need to test end-to-end: `pnpm db:push && MOCK_LLM=1 pnpm sim --seed 42 --days 5`
-2. **`artifacts/freelancer-budget-tracker/freelancer-budget-tracker.xlsx`** — run `pnpm tsx artifacts/freelancer-budget-tracker/build.ts` to generate the actual xlsx file
-3. **MOCK_LLM canned responses** — `src/core/llm.ts` has an `addMockOutput` map but the operator/analytics agents need realistic mock JSON responses that match their zod schemas. Without this, `MOCK_LLM=1 pnpm sim` will throw on JSON.parse of "{"ok":true,"mock":true}". Fix: expand `MOCK_OUTPUTS` in llm.ts with per-agent canned schema-valid responses, OR make the LLM mock smarter (detect schema from agent name).
-4. **`verifyWebhookSignature` async issue** — `src/store/payments.ts:72` uses `await import("crypto")` inside a non-async function. Fix: import crypto at top of file.
-5. **`analytics.ts` syntax error** — line in `retireList` array uses `;` instead of `,` in the object type: `z.object({ productId: z.string(); reason: z.string() })`. Fix: change `;` to `,`.
+Scoring weights: autonomy 30% · neatlogs/Entire/cfo.ai 25% · demo video 20% · building in public 15% · usefulness 10%.
+Order work by points, not by architecture completeness.
 
-### P1 — Demo quality
-6. **`docs/ARCHITECTURE.md`** — ASCII/mermaid diagram
-7. **`docs/ASSUMPTIONS.md`** — decisions and limitations
-8. **`docs/DEMO_SCRIPT.md`** — 3-min demo script
-9. **`docs/CFO_AI_INPUTS.md`** — business model inputs for cfo.ai
-10. **`docs/X_POSTS.md`** — 4 draft X posts
-11. **`README.md`** — setup, architecture, results table, disclosure
+### Audit: what's actually true right now
+- Fixed already: the analytics `;` typo and the payments `await import("crypto")` bug are both gone. `src/` typechecks clean.
+- **Blocker:** better-sqlite3 11.x doesn't build on Node 24, so every test and the sim crash on load. Fix verified in isolation: `better-sqlite3@^12` works on Node 24.6.
+- **The failure-injection story isn't wired.** `src/sim/inject.ts` exports `shouldSkipVerifyGate`, `shouldSkipPriceFloor`, `getMinSampleOverride` and `getRefundAmountOverride`, but nothing calls them.
+- **`--config` is ignored.** `run.ts` never calls `loadConfigFile`, so baseline, failures and fixed all run identically. The before/after table would show zero difference.
+- **The mock LLM shows no autonomy.** The operator always returns `noop`, verify returns `results: []`, and mock cost is 0. In mock mode the agents never decide anything, and "profit after inference" equals plain profit.
+- **The real LLM path can't run.** `llm.ts` dynamically imports `@aws-sdk/client-bedrock-runtime`, which isn't installed. `@ai-sdk/amazon-bedrock` is installed but unused.
+- **neatlogs is a stub.** `trace.ts` POSTs to an invented URL. A real `neatlogs` npm package exists (v1.1.28). neatlogs ingests OpenTelemetry over OTLP/HTTP, which is the fallback if the JS SDK is awkward.
+- **Entire CLI isn't installed** and isn't enabled on this repo.
+- `tsconfig.json` has `rootDir: src` but includes `tests/`, so `tsc` errors (TS6059).
 
-### P2 — Nice to have
-12. Full drizzle migrations (currently schema-only, no migration files generated)
-13. `vitest.config.ts` with in-memory SQLite so policy/ledger tests work without real DB
-14. End-to-end test: seed → 30-day sim → eval:compare baseline vs failures
-15. Evidence screenshots in `docs/evidence/`
+### Phase 0: unblock (≈1h)
+1. `pnpm add better-sqlite3@^12`, then `pnpm test`.
+2. tsconfig: drop `rootDir` (or keep it and exclude tests from tsc).
+3. `pnpm add @aws-sdk/client-bedrock-runtime` and `pnpm remove @ai-sdk/amazon-bedrock`. The code already uses the AWS SDK.
+4. `run.ts`: parse `--config` and merge `loadConfigFile()` into `config` before anything reads it.
+5. `pnpm db:push`, then `pnpm tsx artifacts/freelancer-budget-tracker/build.ts`.
+6. `MOCK_LLM=1 AUTO_APPROVE_DEMO=1 pnpm sim --seed 42 --days 5` should complete without errors.
+7. **Install Entire now** (`entire enable` in this repo). Every commit from here on gets a checkpoint, and checkpoints can't be created after the fact.
+
+### Phase 1: make the before/after story real (≈4h, autonomy 30%)
+1. Wire the injections:
+   - `verify.ts` and `content.publishListing` → `shouldSkipVerifyGate` (F1, unverified claim).
+   - `support.ts` → `getRefundAmountOverride` (F2, angry refund).
+   - `policy.ts` price floor → `shouldSkipPriceFloor` (F3, negative-margin discount).
+   - `operator.ts` sample-size gate → `getMinSampleOverride` (F4, thin-data rotation).
+2. Replace the static mocks with a **deterministic, metrics-aware mock policy**. The prompt already includes the metrics JSON, so parse `userMessage`:
+   - Operator: low conversion → `rewrite_listing`/`draft_post`; high traffic and low conversion → `discount` experiment; any channel with fewer than N sessions → `rotate` (only allowed when F4 is injected).
+   - Verify: fail any claim that doesn't appear in the artifact text, e.g. by numeric mismatch.
+   - Support: an angry ticket proposes a full refund.
+   - Non-zero mock token costs, scaled by tier.
+3. Run three 30-day sims (baseline, failures, fixed) and get `eval:compare` to show clear deltas. The deltas to show are policy blocks, profit, refunds paid, unverified listings and margin. That table is the headline of the README and the video.
+4. Add a vitest per failure mode that asserts guardrail ON blocks and OFF leaks.
+
+### Phase 2: sponsor tools (≈3h, 25%)
+1. **neatlogs:** read the `neatlogs` npm README and swap `trace.ts` onto it (fallback: OTel SDK + OTLP exporter). Make sure agent→tool→LLM spans nest, and tag them with run_id, sim_day and policy-block events. Do a short real-Bedrock run (3 days) so traces have real tokens and cost. Screenshot the trace tree for F1–F4.
+2. **Entire:** enabled from Phase 0. In the README, link the `entire/checkpoints/v1` branch and one checkpoint showing an agent session that fixed a guardrail.
+3. **cfo.ai:** `pnpm export:cfo <fixed_run_id>`, then load it into cfo.ai and build the unit-economics model: price, platform fee, inference cost per order, refund rate. Screenshot it, and write `docs/CFO_AI_INPUTS.md` with the numbers *from the run*, not invented ones.
+
+### Phase 3: make autonomy visible (≈2–3h)
+1. Add an `/ops` page to the Hono app that reads from SQLite (no new deps): a daily P&L chart from the ledger, the operator decision log (action + `metric_cited` + reasoning), policy blocks with reasons, and experiment states. This page is what the video shows.
+2. Make the storefront real: one live product, Dodo test-mode checkout → webhook → download link. A real test purchase on camera is worth more than another sim day.
+
+### Phase 4: ship (≈3h, 20% + 15%)
+1. README: one-paragraph pitch, architecture mermaid diagram, results table, how to run (`MOCK_LLM=1` path in 3 commands), AI disclosure.
+2. `docs/DEMO_SCRIPT.md`, ≤3 min: problem (0:00–0:20) → store live and a real purchase (0:20–0:50) → 30-day sim with failures injected and things going wrong (0:50–1:30) → same seed with guardrails, neatlogs trace of the block (1:30–2:20) → results table, cfo.ai model, Entire checkpoints (2:20–3:00).
+3. **Build in public, starting now, not at the end:** post 1 tonight (what we're building plus the architecture), post 2 when the sim first runs, post 3 with the neatlogs trace of a blocked bad refund, post 4 at launch with the video. Keep drafts in `docs/X_POSTS.md`.
+4. Record the video by Oct 12 ~8 PM IST. Leave 4h of buffer before 11:55 PM.
+
+### Cut / don't do
+Email channel, market scraping, landing-page generation, ESLint setup, drizzle migration files (`db:push` is enough), multiple real LLM runs (one short real run for traces only).
+
+### Suggested timeline (IST)
+- Oct 11, to 23:00: Phase 0, plus X post 1.
+- Oct 12, 09:00–13:00: Phase 1.
+- 13:00–16:00: Phase 2.
+- 16:00–18:30: Phase 3.
+- 18:30–21:00: Phase 4 and video.
+- 21:00–23:55: buffer and submission.
 
 ---
 
