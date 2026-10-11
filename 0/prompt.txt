@@ -1,0 +1,1 @@
+fk this let's use openrouter for models. no aws. i need to quickly see the traces in neatlog. dont stop this time
