@@ -1,0 +1,1 @@
+theree will be four agents as before(no need for promotor) our goal is to build this app so that we can see thinking traces of eeach agent and how they use different tools for their own work. do it quick. no need to think beyond that for now. go ahead
