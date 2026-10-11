@@ -1,0 +1,199 @@
+PROJECT: AutoShelf — an autonomous digital-goods store run by a small team of AI agents
+HACKATHON: neatHack (online, Oct 10-12 2026). Submission closes Mon Oct 12, 11:55 PM IST. Time is tight (~36h of build). Prefer working and verified over ambitious.
+
+=====================================================================
+0. HOW TO WORK
+=====================================================================
+- First, read this whole file, then produce a short plan (files to create, order of work, assumptions). Then start building. Do not wait for approval; flag assumptions in /docs/ASSUMPTIONS.md.
+- Build in the order in section 11. Get one product working end to end before adding anything else.
+- Commit small and often. After each failure-fix (section 12), create an Entire checkpoint and a PR-style commit message describing the failure, root cause, fix, and metric change.
+- Before writing neatlogs or Dodo Payments integration code, read their docs/SDK types in the repo or via web fetch. Do NOT guess APIs. If something is unavailable, wrap it behind a small interface (core/trace.ts, store/payments.ts) so it can be swapped, and note it in ASSUMPTIONS.md.
+- Every LLM output must be parsed with zod. On parse failure, retry once with the error message, then fail the task visibly.
+- Everything random must come from a seeded PRNG so two runs with the same seed are comparable.
+
+=====================================================================
+1. GOAL
+=====================================================================
+Build an agent system that runs a digital-goods store end to end. Its single objective: maximize PROFIT AFTER INFERENCE COST by increasing sales across web and social channels (X). It builds products, lists them, markets them, supports customers, and runs experiments, with hard guardrails enforced in code.
+
+Judging weights (design for these):
+- The agent handles a substantial task start to finish: 30%
+- Effective use of neatlogs (tracing), Entire (checkpoints), cfo.ai (business plan): 25%
+- Demo video clarity: 20%
+- Building in public: 15%
+- Usefulness/originality: 10%
+Also required: evidence and verification (before/after runs with metrics).
+
+Be honest in docs: real traffic is not available in 48h, so buyers/traffic are SIMULATED (seeded personas). Payments use Dodo Payments in test mode. Deliverables are real files. Say this explicitly in README.
+
+=====================================================================
+2. STACK
+=====================================================================
+- TypeScript, Node 20, tsx (no build step), pnpm
+- LLM: Claude via Amazon Bedrock (AWS credits). Make model IDs configurable in config.ts. Tiers: STRONG (Operator, Content build), MID (Analytics), CHEAP (Support, copy tasks). Add a mock LLM mode (env MOCK_LLM=1) returning canned outputs so the sim and tests run offline and free.
+- DB: SQLite via better-sqlite3 + Drizzle (one .sqlite file per run in /runs, so snapshot/reset = file copy)
+- Validation: zod
+- Storefront: Hono + server-rendered HTML (simple, fast). Routes: /, /p/:slug, /checkout/:productId, /webhook/dodo, /download/:token
+- Payments: Dodo Payments test mode. Webhook marks order paid and triggers delivery (signed, expiring download token).
+- Observability: neatlogs. Root span per simulated day, child spans per agent step, LLM call, tool call. Tag spans with run_id, sim_day, agent, product_id.
+- Build history: Entire checkpoints (use the Entire CLI/tools in this repo's workflow).
+- Tests: vitest for services (policy, verify, ledger, metrics) and sim determinism.
+- Lint/format: eslint + prettier, strict TS.
+
+=====================================================================
+3. ARCHITECTURE
+=====================================================================
+Four agents plus deterministic services.
+
+AGENTS (each = system prompt + tool set + zod output schema, plain TS functions, no agent framework):
+1. OPERATOR — owns the goal. Each simulated day: read metrics, ask Analytics for a diagnosis, choose 1-2 actions, delegate tasks, start/close experiments. The ONLY agent that changes strategy. Must cite the metric it read for every action (logged to events).
+2. CONTENT — builds products and writes everything public: product artifacts, listings, landing pages, X posts, email copy. Must pass verify_claims before publishing a listing.
+3. ANALYTICS & MARKET — demand research, funnel analysis by channel (views -> cart -> purchase), experiment readouts, ranked build/retire list.
+4. SUPPORT — pre-sale questions, delivery issues, refund/complaint handling. Proposes refunds; policy engine decides.
+
+SERVICES (code, not agents; available to agents as tools, or Operator-only where noted):
+- verify.ts: verify_claims(product_id) — runs artifact checks (tests pass / formulas recalc with zero errors / each listing claim matches artifact facts); returns per-claim pass/fail. Listing may only use verified claims.
+- policy.ts: policy.check(action) on EVERY write tool. Rules: price floor = min margin %, max discount %, refund auto-approve limit (above -> approval queue), daily spend cap (inference + other), per-order inference cost cap, posts require approval. Log every block to events and run_metrics.policy_blocks.
+- metrics.ts: read-only views over ledger: revenue, COGS, inference cost, platform fees, profit, conversion by channel, cost per order.
+- ledger.ts: append-only money log. Every LLM call writes an inference entry automatically (core/llm.ts). Profit = SUM(ledger). Never store profit as a mutable field.
+- approvals.ts: queue for posts / large refunds. In demo mode, auto-approve via a CLI flag but still log.
+- sim/: seeded clock, buyer personas, traffic per channel, purchase-probability model, failure injection.
+- trace.ts: neatlogs wrapper around every agent step and tool call.
+
+DAILY LOOP (one simulated day):
+1. Sim generates traffic per channel (web, x) and tickets.
+2. Support handles tickets.
+3. Operator tick: read yesterday's metrics -> ask Analytics for diagnosis -> choose actions.
+4. Analytics returns funnel leaks by channel, significant experiment results, ranked build/retire list.
+5. Operator creates tasks for Content (new listing, page rewrite, post batch, new product) and starts/closes experiments.
+6. Content executes, passes verify_claims, publishes; posts go to approval queue.
+7. Day closes; write run_metrics.
+
+OPERATOR RULES (enforced in code):
+- One active experiment per (lever, product).
+- Minimum sample (default 200 sessions) before score_experiment treats a result as significant.
+- Auto-revert an experiment if profit per order goes below zero.
+- Max N actions per tick.
+
+=====================================================================
+4. TOOLS PER AGENT
+=====================================================================
+Operator: get_metrics, get_experiments, create_task(agent, brief), start_experiment, close_experiment(keep|revert), set_price (policy-gated), retire_product, request_approval
+Content: write_artifact, run_tests, recalc_xlsx, verify_claims, publish_listing, draft_post(channel), create_landing_page
+Analytics: get_metrics, fetch_page, search, write_market_signal, funnel_report(channel, range), score_experiment(id)
+Support: lookup_order, read_policy, reply, propose_refund, escalate
+
+=====================================================================
+5. PRODUCT CATALOG (seed 6; build 3 first)
+=====================================================================
+Chosen for real Gumroad demand (software dev is the top-revenue category; writing/publishing is a good entry niche) and for objective verifiability:
+1. Developer starter kit (e.g. Hono/Next + payments boilerplate or "AI agent starter" repo) — $29-49 — verify: installs, builds, tests pass in clean dir
+2. AI coding-tool rules packs (CLAUDE.md / Cursor rules per stack) — $9-15 — verify: applied to a sample repo, checks pass
+3. Prompt packs by profession (recruiters, real estate agents, teachers, Etsy sellers) — $9-19 — verify: each prompt run on sample inputs and scored
+4. Spreadsheet templates (freelancer budget/invoicing tracker, startup runway model) — $12-24 — verify: formulas recalc, zero errors, sample data present
+5. Printable planners/trackers (budget, habit, job search) — $5-12 — verify: render check, page count
+6. Short niche guides (freelance pricing, cold-email templates) — $9-19 — verify: claims fact-checked, no invented stats
+BUILD FIRST: #4 (fast + verifiable), #2, #3. Others only if time allows. Artifacts live in /artifacts/<slug>/.
+
+=====================================================================
+6. DATA MODEL (SQLite; implement in Drizzle schema + migrations)
+=====================================================================
+products(id, slug, type, title, description, price_cents, cost_cents_est, status[draft|verified|live|retired], artifact_path, version, created_at)
+claims(id, product_id, text, verified[bool|null], note)
+channels(id, name[web|x|email])
+posts(id, channel_id, product_id, body, status[draft|approved|published], utm, sim_day)
+traffic(id, sim_day, channel_id, product_id, utm, sessions, add_to_cart)
+orders(id, product_id, channel_id, price_paid_cents, discount_pct, status[paid|delivered|refunded], dodo_ref, sim_day)
+tickets(id, order_id, kind[presale|delivery|refund|complaint], status[open|resolved|escalated], sim_day)
+messages(id, ticket_id, role[customer|agent|human], body, span_id)
+tasks(id, from_agent, to_agent, brief, status[open|done|failed], result_json, sim_day)
+experiments(id, hypothesis, lever[price|listing|post_style|bundle|discount|new_product|retire], target_id, params_json, start_day, end_day, result_json, decision[keep|revert|pending])
+market_signals(id, source, category, keyword, score, observed_day)
+approvals(id, kind[post|refund|spend], payload_json, status, decided_by)
+ledger(id, sim_day, kind[revenue|cogs|inference|fee|refund], amount_cents, ref_type, ref_id)
+llm_calls(id, run_id, agent, model, in_tokens, out_tokens, cost_cents, span_id, sim_day)
+events(id, run_id, sim_day, agent, action, payload_json, ts)   -- audit log
+runs(id, seed, git_sha, entire_checkpoint, trace_root, config_json)
+run_metrics(run_id, sim_day, revenue, profit, inference_cost, conversion_by_channel_json, claim_verified_rate, policy_blocks, cost_per_order)
+
+Rules: money only moves through ledger; span_id links DB rows to neatlogs traces; runs.seed + git_sha make before/after runs comparable. Include a platform-fee model (configurable %, default ~10%) as ledger entries so cfo.ai can model marketplace fees.
+
+=====================================================================
+7. SIMULATOR
+=====================================================================
+- mulberry32(seed) for ALL randomness.
+- 6 buyer personas (budget freelancer, dev founder, student, agency owner, hobbyist, bargain hunter): price sensitivity, topic interests, channel affinity, complaint probability.
+- Traffic per channel per day driven by published posts (X) and listing quality (web).
+- Purchase probability = f(persona fit, price vs reference price, listing_score, channel conversion). listing_score = cached LLM-judge score 0-1 per listing version (mockable).
+- Failure injection via config: inject: ["unverified_claim","angry_refund","negative_margin_discount","thin_data_rotation"].
+- CLI: pnpm sim --seed 42 --days 30 --config configs/baseline.json
+
+=====================================================================
+8. REPO LAYOUT
+=====================================================================
+/src/agents      operator.ts content.ts analytics.ts support.ts
+/src/services    verify.ts policy.ts metrics.ts ledger.ts approvals.ts
+/src/core        llm.ts (Bedrock + MOCK_LLM + cost->ledger) trace.ts (neatlogs wrapper) db.ts schema.ts config.ts
+/src/sim         clock.ts personas.ts traffic.ts inject.ts
+/src/store       Hono app: routes, templates, payments.ts (Dodo), delivery.ts
+/src/eval        compare.ts (before/after table from two run DBs), export_cfo.ts
+/artifacts       generated products
+/runs            one sqlite file per run
+/configs         baseline.json, fixed.json
+/docs            ARCHITECTURE.md, ASSUMPTIONS.md, DEMO_SCRIPT.md, CFO_AI_INPUTS.md
+/tests           policy, verify, ledger, metrics, sim-determinism
+README.md  .env.example  package.json  tsconfig.json  drizzle.config.ts
+
+=====================================================================
+9. SCRIPTS (package.json)
+=====================================================================
+dev (storefront), sim (run simulation), test, lint, db:migrate, eval:compare (two run IDs -> markdown table), export:cfo (run metrics -> CSV/JSON for cfo.ai), approve:all (demo helper)
+
+=====================================================================
+10. ENV (.env.example)
+=====================================================================
+AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, BEDROCK_MODEL_STRONG, BEDROCK_MODEL_MID, BEDROCK_MODEL_CHEAP, NEATLOGS_API_KEY, DODO_API_KEY, DODO_WEBHOOK_SECRET, MOCK_LLM, DAILY_SPEND_CAP_CENTS, PLATFORM_FEE_PCT, SIM_SEED
+
+=====================================================================
+11. BUILD ORDER
+=====================================================================
+1. Core: schema, db, llm.ts with cost->ledger, trace.ts (neatlogs), policy.ts, ledger.ts, metrics.ts, MOCK_LLM. Tests for policy/ledger/metrics. Wire tracing FIRST.
+2. One product end to end: Content builds spreadsheet template -> verify_claims -> publish listing -> storefront page -> Dodo test checkout -> webhook -> delivery link.
+3. Simulator + Support: buyers, traffic, tickets, refund policy flow.
+4. Operator + Analytics: daily loop, experiments (price + discount levers), channel attribution (web vs x).
+5. Failure injection + fixes (section 12), checkpoints, seeded before/after run.
+6. Two more products (rules pack, prompt pack).
+7. Eval + export: compare.ts, export_cfo.ts, docs, README, DEMO_SCRIPT.md.
+CUT FIRST if time runs out: Analytics scraping (use a hand-seeded market_signals table), email channel, extra products. If needed, reduce Analytics to a single funnel_report function the Operator calls directly — keep the architecture intact.
+
+=====================================================================
+12. DEMO FAILURES -> FIXES (each needs: baseline run showing bug, fix, Entire checkpoint, fixed run, metric delta)
+=====================================================================
+F1. Content publishes an unverified claim (e.g. "includes 500 rows" when file has 312). Baseline: verify gate disabled. Fix: verify_claims required before publish; Listing receives verified claims only. Metric: claim_verified_rate -> 100%.
+F2. Operator applies a discount that drives margin negative. Fix: policy.check price floor + auto-revert rule. Metric: policy_blocks logged, profit recovers.
+F3. Operator rotates budget/focus to a channel based on thin data. Fix: minimum-sample rule in score_experiment. Metric: fewer reverted experiments.
+F4. Support over-refunds / ignores policy. Fix: Support only proposes; policy engine decides; large refunds -> approvals. Metric: refund_policy_violations -> 0.
+Compare via same seed, same days, baseline.json vs fixed.json. Output a markdown table: claim_verified_rate, policy_blocks, cost_per_order, profit, conversion by channel.
+
+=====================================================================
+13. HACKATHON REQUIREMENTS CHECKLIST (deliverables)
+=====================================================================
+[ ] Uses neatlogs (traces for every run; before/after comparison screenshots saved in /docs/evidence)
+[ ] Uses Entire (checkpoints for each failure fix; referenced in README)
+[ ] Uses cfo.ai: docs/CFO_AI_INPUTS.md with price, COGS, inference cost per order (from real run data), platform fee, margins, runway at 10/100/1000 orders/month. Include the exported business plan in submission.
+[ ] Public repo with clear README: what it is, architecture diagram (ASCII/mermaid), how to run (mock + real), simulated-vs-real disclosure, results table, guardrails list
+[ ] Demo video script (~3 min) in docs/DEMO_SCRIPT.md: pitch (20s) -> simulated 30-day run (60s) -> one failure traced in neatlogs, fixed via Entire checkpoint, rerun (60s) -> cfo.ai model (40s) -> results table (10s)
+[ ] Building-in-public: docs/X_POSTS.md with 3-4 draft posts (day 1 progress, failure + fix, results, final submission quote-tweet text for the official neatlogs post with team, name, project, public repo, demo)
+[ ] Guardrails documented: spend cap, per-order inference cap, price floor, refund limit w/ approval, post approval, audit log, kill switch (env or CLI flag that halts the loop)
+
+=====================================================================
+14. QUALITY BAR
+=====================================================================
+- Deterministic: same seed + config => identical sim outputs (test this).
+- Agents never write money or price directly; only via policy-gated tools.
+- Every agent action produces an events row and a neatlogs span.
+- No secrets in repo. Mock mode must run the full 30-day sim with zero network.
+- Keep prompts in /src/agents/prompts/*.md so they can be diffed in PRs.
+- When uncertain, choose the simpler design and document it in ASSUMPTIONS.md.
+
+START NOW: output your plan (max ~30 lines), then scaffold the repo and begin step 1. read and refine this plan for a hackathoon that ends in 24hrss. and setup the repo. suggestions are welcome
