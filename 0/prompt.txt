@@ -1,0 +1,1 @@
+first check through curl if neatlogs and openrouter are working and then in ops page i need a run agent button to make one run from the team of agents to make sales of the store product
