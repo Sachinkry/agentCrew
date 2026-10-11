@@ -1,0 +1,1 @@
+reeemove all raw css. use shadcn + tailwind. dont disappoooiiiiiint me
