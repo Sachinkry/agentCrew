@@ -1,0 +1,21 @@
+<pasted_content id="1e7a">
+AccessDeniedException
+User: arn:aws:iam::063028693684:user/hackathon-user-152 is not authorized to perform: bedrock:ListAgents on resource: arn:aws:bedrock:eu-north-1:063028693684:agent/* because no identity-based policy allows the bedrock:ListAgents action
+Diagnose with Amazon Q
+
+User: arn:aws:iam::063028693684:user/hackathon-user-152 is not authorized to perform: bedrock:ListFoundationModels because no identity-based policy allows the bedrock:ListFoundationModels action
+Diagnose with Amazon Q
+
+Agents Classic will no longer be open to new customers starting on July 30, 2026
+Amazon Bedrock Agents (launched Nov 2023) is now 'Amazon Bedrock Agents Classic' and will no longer be open to new customers starting on July 30, 2026. For capabilities similar to Bedrock Agents Classic, explore Amazon Bedrock AgentCore.
+Learn more
+Try AgentCore
+
+Agents Classic Info
+Migrate your Bedrock agent to AgentCore Harness 
+Quickly bring your existing agent logic into AgentCore as a Harness and build on a more configurable, production-ready foundation. Your agent logic will be preserved while you unlock a stateful runtime environment, Memory across sessions, skills, Identity, tools through Gateways, built-in tools like Browser, Code Interpreter, and Knowledge Bases, plus direct access to S3 files and EFS file systems.
+View instructions
+Agents (0)
+</pasted_content id="1e7a">
+
+ what this means
