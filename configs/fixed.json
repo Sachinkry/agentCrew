@@ -1,0 +1,14 @@
+{
+  "mockLlm": true,
+  "simDays": 30,
+  "simSeed": 42,
+  "inject": [],
+  "autoApproveDemo": true,
+  "dailySpendCapCents": 5000,
+  "platformFeePct": 10,
+  "priceFloorMarginPct": 20,
+  "maxDiscountPct": 30,
+  "refundAutoApproveLimitCents": 2000,
+  "minExperimentSessions": 200,
+  "_note": "This is the 'fixed' config — all guardrails active (no failure injection)"
+}

@@ -1,0 +1,39 @@
+{
+  "name": "autoshelf",
+  "version": "0.1.0",
+  "description": "Autonomous digital-goods store run by AI agents",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/store/index.ts",
+    "sim": "tsx src/sim/run.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src tests --ext .ts",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "eval:compare": "tsx src/eval/compare.ts",
+    "export:cfo": "tsx src/eval/export_cfo.ts",
+    "approve:all": "tsx src/services/approvals.ts --approve-all"
+  },
+  "dependencies": {
+    "@ai-sdk/amazon-bedrock": "^1.0.0",
+    "@hono/node-server": "^1.13.0",
+    "better-sqlite3": "^11.0.0",
+    "drizzle-orm": "^0.36.0",
+    "hono": "^4.6.0",
+    "xlsx": "^0.18.5",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "drizzle-kit": "^0.28.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
