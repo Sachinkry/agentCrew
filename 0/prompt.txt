@@ -1,0 +1,1 @@
+yeah go ahead. add much more deterrrministicity to your approach. test driven development instttead of this ambiguoous approach.
