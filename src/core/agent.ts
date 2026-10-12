@@ -113,6 +113,23 @@ export function nextStep(
   return { do: "return", text: `No answer: the reply was cut off twice (stop reason: ${res.stopReason || "none"}).` };
 }
 
+const LAST_RESULT_CHARS = 300;
+
+/** What a budget-final turn hands back: the model's text, then each last tool call and what it returned. */
+export function lastActionsReport(text: string, outcomes: Array<{ name: string; isError: boolean; text: string }>): string {
+  const compact = (raw: string) => {
+    let s: string;
+    try {
+      s = JSON.stringify(JSON.parse(raw));
+    } catch {
+      s = raw.replace(/\s+/g, " ").trim();
+    }
+    return s.length > LAST_RESULT_CHARS ? `${s.slice(0, LAST_RESULT_CHARS)}…` : s;
+  };
+  const lines = outcomes.map((o) => `- ${o.name} ${o.isError ? "failed" : "ok"}: ${compact(o.text)}`);
+  return [text.trim(), `Last actions:\n${lines.join("\n")}`].filter(Boolean).join("\n\n");
+}
+
 class StepWriter {
   private seq = 0;
   constructor(private agentRunId: string) {}
@@ -296,12 +313,12 @@ async function modelLoop(
     const step = nextStep(res, { final, retried });
     if (step.do === "return") return step.text;
     if (step.do === "tools-then-return") {
-      const outcomes: string[] = [];
+      const outcomes: Array<{ name: string; isError: boolean; text: string }> = [];
       for (const use of res.toolUses) {
         const { text, isError } = await execTool(toolsByName.get(use.name), use.name, use.input, ctx, steps);
-        outcomes.push(isError ? `${use.name} failed: ${text}` : `${use.name} ok`);
+        outcomes.push({ name: use.name, isError, text });
       }
-      return `${step.text}\n\nLast actions: ${outcomes.join("; ")}.`.trim();
+      return lastActionsReport(step.text, outcomes);
     }
     if (step.do === "retry") {
       retried = true;

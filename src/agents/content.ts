@@ -101,7 +101,7 @@ const tools: AgentTool[] = [
           items: {
             type: "object",
             properties: {
-              claim: { type: "string", description: "exact claim text from get_product" },
+              claim: { type: "string", description: "exact claim text from get_product, or a new claim you want to use" },
               verified: { type: "boolean" },
               note: { type: "string" },
             },
@@ -116,13 +116,19 @@ const tools: AgentTool[] = [
       const db = getDb();
       const existing = productClaims(p.id);
       let updated = 0;
+      let added = 0;
       for (const v of verdicts as Array<{ claim: string; verified: boolean; note: string }>) {
         const row = existing.find((c) => c.text === v.claim);
-        if (!row) continue;
-        db.update(claims).set({ verified: v.verified, note: v.note }).where(eq(claims.id, row.id)).run();
-        updated++;
+        if (row) {
+          db.update(claims).set({ verified: v.verified, note: v.note }).where(eq(claims.id, row.id)).run();
+          updated++;
+        } else {
+          // A new claim the writer wants to use: record it, so the listing gate knows about it too.
+          db.insert(claims).values({ id: randomUUID(), productId: p.id, text: v.claim, verified: v.verified, note: v.note }).run();
+          added++;
+        }
       }
-      return { updated, failed: (verdicts as any[]).filter((v) => !v.verified).map((v) => v.claim) };
+      return { updated, added, failed: (verdicts as any[]).filter((v) => !v.verified).map((v) => v.claim) };
     },
   },
   {
