@@ -10,6 +10,7 @@ const cents = (n: number | null | undefined) => `$${((n ?? 0) / 100).toFixed(2)}
 const tools: AgentTool[] = [
   {
     name: "get_sales_summary",
+    readOnly: true,
     description:
       "Per live product: leads (clicks through to the vendor's signup — the main sales number for B2B listings), plus revenue, orders, refunds, AI cost and profit. Money is in cents.",
     input_schema: { type: "object", properties: {} },
@@ -35,6 +36,7 @@ const tools: AgentTool[] = [
   },
   {
     name: "get_traffic_sources",
+    readOnly: true,
     description:
       "Where visitors come from and how many buy. Includes simulated traffic per channel and real storefront visits per source.",
     input_schema: { type: "object", properties: {} },
@@ -57,6 +59,7 @@ const tools: AgentTool[] = [
   },
   {
     name: "get_post_performance",
+    readOnly: true,
     description: "Each social/blog post for a live product (or the whole store), with the visits and leads its tracked links brought.",
     input_schema: { type: "object", properties: {} },
     run: async () =>
@@ -125,6 +128,7 @@ function compactProfile(matchedOn: string, c: any) {
 tools.push(
   {
     name: "get_competitor_profiles",
+    readOnly: true,
     description:
       "Compare neatlogs with its competitors using Crustdata company data: size, headcount growth, funding, web traffic and who Crustdata lists as their competitors. " +
       "Defaults to neatlogs plus the tools neatlogs itself names (Langfuse, LangSmith, Braintrust, Raindrop, Arize Phoenix, Laminar). Costs Crustdata credits on first call; cached for 7 days.",
@@ -150,6 +154,7 @@ tools.push(
   },
   {
     name: "find_similar_companies",
+    readOnly: true,
     description:
       "Search Crustdata for companies doing similar work to neatlogs (default query: LLM/agent observability, tracing and evals), to spot competitors we don't know about yet. Cheap: about 0.03 credits per result.",
     input_schema: {

@@ -49,6 +49,7 @@ function inspectFiles(artifactPath: string) {
 const tools: AgentTool[] = [
   {
     name: "get_product",
+    readOnly: true,
     description: "Look up a product's current listing (title, description, price), the claims made about it, and its posts (drafts await the owner's approval).",
     input_schema: {
       type: "object",
@@ -77,6 +78,7 @@ const tools: AgentTool[] = [
   },
   {
     name: "inspect_product_files",
+    readOnly: true,
     description:
       "Open the actual files a buyer would download and report hard facts (file names, sheet/prompt counts, an excerpt). Use this to check claims.",
     input_schema: {

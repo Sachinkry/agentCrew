@@ -15,6 +15,7 @@ import { agentRuns } from "../core/schema.js";
 const tools: AgentTool[] = [
   {
     name: "get_store_snapshot",
+    readOnly: true,
     description: "Quick overview: live products with leads so far, money, open tickets, and posts (published / awaiting the owner's approval).",
     input_schema: { type: "object", properties: {} },
     run: async () => ({

@@ -28,6 +28,8 @@ export interface AgentTool {
   name: string;
   description: string;
   input_schema: JsonSchema;
+  /** A lookup that changes nothing: skipped on a budget-final turn (no turn is left to use it) and left out of reports. */
+  readOnly?: boolean;
   run: (input: Record<string, unknown>, ctx: AgentCtx) => Promise<unknown>;
 }
 
@@ -115,7 +117,13 @@ export function nextStep(
 
 const LAST_RESULT_CHARS = 300;
 
-/** What a budget-final turn hands back: the model's text, then each last tool call and what it returned. */
+/** On a budget-final turn, only calls that do something run: a read's result could never be used. */
+export function splitFinalCalls<U extends { name: string }>(uses: U[], toolsByName: Map<string, AgentTool>) {
+  const isRead = (u: U) => toolsByName.get(u.name)?.readOnly === true;
+  return { run: uses.filter((u) => !isRead(u)), skipped: uses.filter(isRead) };
+}
+
+/** What a budget-final turn hands back: the model's text, then every action of the job and what it returned. */
 export function lastActionsReport(text: string, outcomes: Array<{ name: string; isError: boolean; text: string }>): string {
   const compact = (raw: string) => {
     let s: string;
@@ -127,7 +135,7 @@ export function lastActionsReport(text: string, outcomes: Array<{ name: string; 
     return s.length > LAST_RESULT_CHARS ? `${s.slice(0, LAST_RESULT_CHARS)}…` : s;
   };
   const lines = outcomes.map((o) => `- ${o.name} ${o.isError ? "failed" : "ok"}: ${compact(o.text)}`);
-  return [text.trim(), `Last actions:\n${lines.join("\n")}`].filter(Boolean).join("\n\n");
+  return [text.trim(), lines.length ? `Done in this job:\n${lines.join("\n")}` : ""].filter(Boolean).join("\n\n");
 }
 
 class StepWriter {
@@ -259,6 +267,7 @@ async function modelLoop(
   const messages: ChatMessage[] = [{ role: "user", content: task }];
 
   let lastText = "";
+  const actions: Array<{ name: string; isError: boolean; text: string }> = []; // every non-read tool call this job
   const replies: number[] = [];
   let retried = false;
   for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -313,12 +322,15 @@ async function modelLoop(
     const step = nextStep(res, { final, retried });
     if (step.do === "return") return step.text;
     if (step.do === "tools-then-return") {
-      const outcomes: Array<{ name: string; isError: boolean; text: string }> = [];
-      for (const use of res.toolUses) {
-        const { text, isError } = await execTool(toolsByName.get(use.name), use.name, use.input, ctx, steps);
-        outcomes.push({ name: use.name, isError, text });
+      const { run, skipped } = splitFinalCalls(res.toolUses, toolsByName);
+      if (skipped.length) {
+        steps.write({ kind: "text", content: `Skipped on the final turn (lookups nothing could use): ${skipped.map((u) => u.name).join(", ")}.` });
       }
-      return lastActionsReport(step.text, outcomes);
+      for (const use of run) {
+        const { text, isError } = await execTool(toolsByName.get(use.name), use.name, use.input, ctx, steps);
+        actions.push({ name: use.name, isError, text });
+      }
+      return lastActionsReport(step.text, actions) || "No answer and no actions: the job ran out of budget.";
     }
     if (step.do === "retry") {
       retried = true;
@@ -329,6 +341,7 @@ async function modelLoop(
 
     for (const use of res.toolUses) {
       const { text, isError } = await execTool(toolsByName.get(use.name), use.name, use.input, ctx, steps);
+      if (!toolsByName.get(use.name)?.readOnly) actions.push({ name: use.name, isError, text });
       messages.push({ role: "tool", tool_call_id: use.id, content: isError ? `ERROR: ${text}` : text });
     }
   }

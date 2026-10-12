@@ -18,6 +18,7 @@ function setTicket(ticketId: string, status: "resolved" | "escalated") {
 const tools: AgentTool[] = [
   {
     name: "list_open_tickets",
+    readOnly: true,
     description: "Open customer tickets with the customer's message, the order and the product.",
     input_schema: { type: "object", properties: { limit: { type: "number" } } },
     run: async ({ limit }) =>

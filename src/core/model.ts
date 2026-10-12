@@ -113,9 +113,9 @@ export function fitMessages(
   return null;
 }
 
-// Thinking tokens allowed per turn, by effort. Without a cap a turn can be spent
-// entirely on reasoning and end with no answer and no tool call.
-export const REASONING_CAP = { low: 1_024, medium: 2_048, high: 4_096 } as const;
+// Thinking tokens asked for per turn, by effort. Some models (deepseek-v4.1-flash) treat this as a
+// hint and think far past it, so low effort turns reasoning off entirely: the one setting they honor.
+export const REASONING_CAP = { medium: 2_048, high: 4_096 } as const;
 
 export function buildChatBody(
   opts: {
@@ -142,7 +142,10 @@ export function buildChatBody(
         }
       : {}),
     // Keep at least half of the reply for the answer itself.
-    reasoning: { max_tokens: Math.min(REASONING_CAP[opts.effort ?? "medium"], Math.floor(maxTokens / 2)) },
+    reasoning:
+      opts.effort === "low"
+        ? { enabled: false }
+        : { max_tokens: Math.min(REASONING_CAP[opts.effort ?? "medium"], Math.floor(maxTokens / 2)) },
     usage: { include: true },
   };
 }
