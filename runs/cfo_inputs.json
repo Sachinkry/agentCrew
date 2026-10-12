@@ -1,0 +1,52 @@
+{
+  "model": "deepseek/deepseek-v4.1-flash",
+  "measured": {
+    "checkIns": 13,
+    "failed": 1,
+    "totalCents": 10.61806598,
+    "avgCents": 0.8167743061538462,
+    "avgTokens": 34336.153846153844,
+    "avgCalls": 10.76923076923077,
+    "avgSecs": 66.92815384615383
+  },
+  "fixedUsdMonth": {
+    "Hosting (VM + backups)": 25,
+    "Domain + email": 5,
+    "Crustdata API (paid plan)": 95,
+    "Observability (neatlogs)": 0
+  },
+  "fixedTotalUsdMonth": 125,
+  "stressMultiplier": 10,
+  "tiers": [
+    {
+      "name": "Starter",
+      "priceUsd": 29,
+      "checkInsPerDay": 4,
+      "inferenceUsdMonth": 0.9801291673846154,
+      "grossUsdMonth": 28.019870832615386,
+      "grossMarginPct": 96.62024425039787,
+      "breakEvenCustomers": 5,
+      "stressGrossMarginPct": 66.20244250397879
+    },
+    {
+      "name": "Growth",
+      "priceUsd": 99,
+      "checkInsPerDay": 24,
+      "inferenceUsdMonth": 5.880775004307693,
+      "grossUsdMonth": 93.1192249956923,
+      "grossMarginPct": 94.05982322797203,
+      "breakEvenCustomers": 2,
+      "stressGrossMarginPct": 40.59823227972028
+    },
+    {
+      "name": "Scale",
+      "priceUsd": 299,
+      "checkInsPerDay": 96,
+      "inferenceUsdMonth": 23.52310001723077,
+      "grossUsdMonth": 275.4768999827692,
+      "grossMarginPct": 92.13274246915358,
+      "breakEvenCustomers": 1,
+      "stressGrossMarginPct": 21.32742469153589
+    }
+  ]
+}

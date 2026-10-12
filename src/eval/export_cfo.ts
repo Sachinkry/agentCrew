@@ -1,116 +1,66 @@
-// Export run metrics to CSV/JSON for cfo.ai business model.
-// Usage: pnpm export:cfo <run_id>
+// Export real check-in economics as inputs for the cfo.ai business plan.
+// Usage: pnpm export:cfo   → runs/cfo_inputs.json + a summary on stdout
 
-import { getDb } from "../core/db.js";
-import { runMetrics, orders, products, ledger } from "../core/schema.js";
-import { eq, sql } from "drizzle-orm";
 import fs from "fs";
+import { sqlAll, getDb } from "../core/db.js";
+import { config } from "../core/config.js";
+import { checkInStats, tierEconomics, breakEvenCustomers, type CheckInRow, type Tier } from "./cfo.js";
 
-const [, , runId = ""] = process.argv;
+// Plan assumptions (edit here, then re-run). Measured numbers come from the DB below.
+export const TIERS: Tier[] = [
+  { name: "Starter", priceUsd: 29, checkInsPerDay: 4 },
+  { name: "Growth", priceUsd: 99, checkInsPerDay: 24 },
+  { name: "Scale", priceUsd: 299, checkInsPerDay: 96 },
+];
+export const FIXED_USD_MONTH: Record<string, number> = {
+  "Hosting (VM + backups)": 25,
+  "Domain + email": 5,
+  "Crustdata API (paid plan)": 95, // assumed; currently on the free sandbox
+  "Observability (neatlogs)": 0,
+};
+// What if we move to a model ~10x the price (e.g. for harder customers)?
+const STRESS_MULTIPLIER = 10;
 
-if (!runId) {
-  console.error("Usage: pnpm export:cfo <run_id>");
-  process.exit(1);
-}
+// One row per check-in: the operator run plus every helper run under it.
+const CHECK_INS_SQL = `
+WITH RECURSIVE tree(root, id) AS (
+  SELECT id, id FROM agent_runs WHERE parent_id IS NULL AND agent = 'operator'
+  UNION ALL SELECT t.root, a.id FROM agent_runs a JOIN tree t ON a.parent_id = t.id)
+SELECT r.id, r.status,
+  COALESCE(SUM(c.cost_cents), 0) AS cents,
+  COALESCE(SUM(c.in_tokens + c.out_tokens), 0) AS tokens,
+  COUNT(c.id) AS calls,
+  COALESCE((r.ended_at - r.started_at) / 1000.0, 0) AS secs
+FROM agent_runs r JOIN tree t ON t.root = r.id LEFT JOIN llm_calls c ON c.span_id = t.id
+GROUP BY r.id ORDER BY r.started_at`;
 
-async function main() {
-  const db = getDb();
-
-  const rows = db
-    .select()
-    .from(runMetrics)
-    .where(eq(runMetrics.runId, runId))
-    .all();
-
-  if (rows.length === 0) {
-    console.error(`No metrics found for run ${runId}`);
+function main() {
+  getDb();
+  const stats = checkInStats(sqlAll<CheckInRow>(CHECK_INS_SQL));
+  if (!stats.checkIns) {
+    console.error("No live check-ins yet (run `pnpm agents` with MOCK_LLM=0 first).");
     process.exit(1);
   }
+  const fixed = Object.values(FIXED_USD_MONTH).reduce((a, b) => a + b, 0);
+  const tiers = TIERS.map((t) => {
+    const e = tierEconomics(stats.avgCents, t);
+    const stress = tierEconomics(stats.avgCents * STRESS_MULTIPLIER, t);
+    return { ...e, breakEvenCustomers: breakEvenCustomers(fixed, e.grossUsdMonth), stressGrossMarginPct: stress.grossMarginPct };
+  });
+  const out = { model: config.model, measured: stats, fixedUsdMonth: FIXED_USD_MONTH, fixedTotalUsdMonth: fixed, stressMultiplier: STRESS_MULTIPLIER, tiers };
 
-  // Aggregate
-  const totalRevenue = rows.reduce((s, r) => s + r.revenue, 0);
-  const totalProfit = rows.reduce((s, r) => s + r.profit, 0);
-  const totalInference = rows.reduce((s, r) => s + r.inferenceCost, 0);
-  const totalOrders = db
-    .select({ count: sql<number>`COUNT(*)` })
-    .from(orders)
-    .get()?.count ?? 0;
+  fs.writeFileSync("runs/cfo_inputs.json", JSON.stringify(out, null, 2));
 
-  const platformFee = db
-    .select({ total: sql<number>`COALESCE(SUM(ABS(amount_cents)), 0)` })
-    .from(ledger)
-    .where(eq(ledger.kind, "fee"))
-    .get()?.total ?? 0;
-
-  const revenuePerOrder = totalOrders > 0 ? totalRevenue / totalOrders : 0;
-  const inferencePerOrder = totalOrders > 0 ? totalInference / totalOrders : 0;
-  const platformFeePerOrder = totalOrders > 0 ? platformFee / totalOrders : 0;
-  const grossMarginPct =
-    totalRevenue > 0
-      ? ((totalRevenue - platformFee) / totalRevenue) * 100
-      : 0;
-  const netMarginPct =
-    totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
-
-  const summary = {
-    run_id: runId,
-    sim_days: rows.length,
-    total_orders: totalOrders,
-    total_revenue_usd: (totalRevenue / 100).toFixed(2),
-    total_profit_usd: (totalProfit / 100).toFixed(2),
-    total_inference_cost_usd: (totalInference / 100).toFixed(2),
-    platform_fees_usd: (platformFee / 100).toFixed(2),
-    avg_revenue_per_order_usd: (revenuePerOrder / 100).toFixed(2),
-    avg_inference_per_order_cents: inferencePerOrder.toFixed(1),
-    avg_platform_fee_per_order_cents: platformFeePerOrder.toFixed(1),
-    gross_margin_pct: grossMarginPct.toFixed(1),
-    net_margin_pct: netMarginPct.toFixed(1),
-    projections: {
-      "10_orders_month": {
-        revenue_usd: ((revenuePerOrder / 100) * 10).toFixed(2),
-        profit_usd: (((totalProfit / Math.max(totalOrders, 1)) / 100) * 10).toFixed(2),
-      },
-      "100_orders_month": {
-        revenue_usd: ((revenuePerOrder / 100) * 100).toFixed(2),
-        profit_usd: (((totalProfit / Math.max(totalOrders, 1)) / 100) * 100).toFixed(2),
-      },
-      "1000_orders_month": {
-        revenue_usd: ((revenuePerOrder / 100) * 1000).toFixed(2),
-        profit_usd: (((totalProfit / Math.max(totalOrders, 1)) / 100) * 1000).toFixed(2),
-      },
-    },
-  };
-
-  // JSON output
-  const jsonPath = `runs/cfo_export_${runId.slice(0, 8)}.json`;
-  fs.writeFileSync(jsonPath, JSON.stringify(summary, null, 2));
-  console.log(`CFO export written to ${jsonPath}`);
-
-  // CSV output (daily)
-  const csvRows = [
-    "sim_day,revenue_usd,profit_usd,inference_cost_usd,orders,policy_blocks,claim_verified_rate",
-    ...rows.map((r) =>
-      [
-        r.simDay,
-        (r.revenue / 100).toFixed(2),
-        (r.profit / 100).toFixed(2),
-        (r.inferenceCost / 100).toFixed(2),
-        0,
-        r.policyBlocks,
-        (r.claimVerifiedRate ?? 0).toFixed(2),
-      ].join(",")
-    ),
-  ].join("\n");
-
-  const csvPath = `runs/cfo_daily_${runId.slice(0, 8)}.csv`;
-  fs.writeFileSync(csvPath, csvRows);
-  console.log(`Daily CSV written to ${csvPath}`);
-
-  console.log("\n── Summary ──");
-  console.log(`Revenue: $${summary.total_revenue_usd}`);
-  console.log(`Profit: $${summary.total_profit_usd}`);
-  console.log(`Net Margin: ${summary.net_margin_pct}%`);
-  console.log(`Avg inference/order: ${summary.avg_inference_per_order_cents}¢`);
+  const f = (n: number, d = 2) => n.toFixed(d);
+  console.log(`Measured over ${stats.checkIns} live check-ins (${stats.failed} failed), model ${config.model}:`);
+  console.log(`  cost ${f(stats.avgCents, 3)}¢ · ${Math.round(stats.avgTokens)} tokens · ${f(stats.avgCalls, 1)} calls · ${Math.round(stats.avgSecs)}s per check-in (total ${f(stats.totalCents, 2)}¢)`);
+  console.log(`Fixed costs: $${fixed}/month\n`);
+  console.log("| Tier | Price/mo | Check-ins/day | Inference/mo | Gross margin | @10x model | Break-even customers |");
+  console.log("|---|---|---|---|---|---|---|");
+  for (const t of tiers) {
+    console.log(`| ${t.name} | $${t.priceUsd} | ${t.checkInsPerDay} | $${f(t.inferenceUsdMonth)} | ${f(t.grossMarginPct, 1)}% | ${f(t.stressGrossMarginPct, 1)}% | ${t.breakEvenCustomers} |`);
+  }
+  console.log("\nWritten to runs/cfo_inputs.json");
 }
 
-main().catch(console.error);
+main();

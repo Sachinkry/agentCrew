@@ -348,7 +348,7 @@ async function mockLoop(
   return "Stopped: hit the turn limit.";
 }
 
-function recordLlmCost(agent: string, ctx: AgentCtx, model: string, inTok: number, outTok: number, cents: number) {
+export function recordLlmCost(agent: string, ctx: AgentCtx, model: string, inTok: number, outTok: number, cents: number) {
   const db = getDb();
   const callId = randomUUID();
   db.insert(llmCalls)
@@ -359,7 +359,7 @@ function recordLlmCost(agent: string, ctx: AgentCtx, model: string, inTok: numbe
       model,
       inTokens: inTok,
       outTokens: outTok,
-      costCents: Math.ceil(cents),
+      costCents: cents,
       spanId: ctx.agentRunId,
       simDay: ctx.simDay,
     })
@@ -370,7 +370,7 @@ function recordLlmCost(agent: string, ctx: AgentCtx, model: string, inTok: numbe
         id: randomUUID(),
         simDay: ctx.simDay,
         kind: "inference",
-        amountCents: -Math.ceil(cents),
+        amountCents: -cents,
         refType: "llm_call",
         refId: callId,
       })

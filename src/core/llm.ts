@@ -94,7 +94,7 @@ export async function callLlm(params: LlmCallParams): Promise<LlmResult> {
         const text = res.text;
         const inTokens = res.inTokens;
         const outTokens = res.outTokens;
-        const costCents = Math.ceil(res.costCents);
+        const costCents = res.costCents;
 
         result = { text, inTokens, outTokens, costCents, spanId: span.id };
       }

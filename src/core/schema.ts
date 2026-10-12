@@ -207,7 +207,7 @@ export const ledger = sqliteTable("ledger", {
   kind: text("kind", {
     enum: ["revenue", "cogs", "inference", "fee", "refund"],
   }).notNull(),
-  amountCents: integer("amount_cents").notNull(),
+  amountCents: real("amount_cents").notNull(),
   refType: text("ref_type"),
   refId: text("ref_id"),
   createdAt: integer("created_at", { mode: "timestamp" })
@@ -222,7 +222,7 @@ export const llmCalls = sqliteTable("llm_calls", {
   model: text("model").notNull(),
   inTokens: integer("in_tokens").notNull(),
   outTokens: integer("out_tokens").notNull(),
-  costCents: integer("cost_cents").notNull(),
+  costCents: real("cost_cents").notNull(), // fractions of a cent: one call is often < 0.1¢
   spanId: text("span_id"),
   simDay: integer("sim_day"),
 });
